@@ -47,12 +47,14 @@ var listen, promListen string
 var cacheDir string
 var proxyHost string
 var excludeHost string
+var offLine bool
 
 func init() {
 	flag.StringVar(&excludeHost, "exclude", "", "exclude host pattern, you can exclude internal Git services")
 	flag.StringVar(&proxyHost, "proxy", "", "next hop proxy for Go Modules, recommend use https://gopropxy.io")
 	flag.StringVar(&cacheDir, "cacheDir", "", "Go Modules cache dir, default is $GOPATH/pkg/mod/cache/download")
 	flag.StringVar(&listen, "listen", "0.0.0.0:8081", "service listen address")
+	flag.BoolVar(&offLine, "offline", false, "Offline mode, use cache only")
 	flag.Parse()
 
 	if os.Getenv("GIT_TERMINAL_PROMPT") == "" {
@@ -85,13 +87,17 @@ func main() {
 		if excludeHost != "" {
 			log.Printf("ExcludeHost %s\n", excludeHost)
 		}
-		handle = &logger{proxy.NewRouter(proxy.NewServer(new(ops)), &proxy.RouterOptions{
+		handle = &logger{proxy.NewRouter(proxy.NewServer(new(onlineOps)), &proxy.RouterOptions{
 			Pattern:      excludeHost,
 			Proxy:        proxyHost,
 			DownloadRoot: downloadRoot,
 		})}
 	} else {
-		handle = &logger{proxy.NewServer(new(ops))}
+		if offLine {
+			handle = &logger{proxy.NewServer(new(offlineOps))}
+		} else {
+			handle = &logger{proxy.NewServer(new(onlineOps))}
+		}
 	}
 
 	server := &http.Server{Addr: listen, Handler: handle}
@@ -180,16 +186,16 @@ func (l *logger) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%.3fs %d %s\n", time.Since(start).Seconds(), rl.code, r.URL)
 }
 
-// An ops is a proxy.ServerOps implementation.
-type ops struct{}
+// An onlineOps is a proxy.ServerOps implementation.
+type onlineOps struct{}
 
 // NewContext creates a context.
-func (*ops) NewContext(r *http.Request) (context.Context, error) {
+func (*onlineOps) NewContext(r *http.Request) (context.Context, error) {
 	return context.Background(), nil
 }
 
 // List lists proxy files.
-func (*ops) List(ctx context.Context, mpath string) (proxy.File, error) {
+func (*onlineOps) List(ctx context.Context, mpath string) (proxy.File, error) {
 	escMod, err := module.EscapePath(mpath)
 	if err != nil {
 		return nil, err
@@ -225,7 +231,7 @@ func (*ops) List(ctx context.Context, mpath string) (proxy.File, error) {
 }
 
 // Latest fetches latest file.
-func (*ops) Latest(ctx context.Context, path string) (proxy.File, error) {
+func (*onlineOps) Latest(ctx context.Context, path string) (proxy.File, error) {
 	d, err := download(module.Version{Path: path, Version: "latest"})
 	if err != nil {
 		return nil, err
@@ -234,7 +240,7 @@ func (*ops) Latest(ctx context.Context, path string) (proxy.File, error) {
 }
 
 // Info fetches info file.
-func (*ops) Info(ctx context.Context, m module.Version) (proxy.File, error) {
+func (*onlineOps) Info(ctx context.Context, m module.Version) (proxy.File, error) {
 	d, err := download(m)
 	if err != nil {
 		return nil, err
@@ -243,7 +249,7 @@ func (*ops) Info(ctx context.Context, m module.Version) (proxy.File, error) {
 }
 
 // GoMod fetches go mod file.
-func (*ops) GoMod(ctx context.Context, m module.Version) (proxy.File, error) {
+func (*onlineOps) GoMod(ctx context.Context, m module.Version) (proxy.File, error) {
 	d, err := download(m)
 	if err != nil {
 		return nil, err
@@ -252,7 +258,7 @@ func (*ops) GoMod(ctx context.Context, m module.Version) (proxy.File, error) {
 }
 
 // Zip fetches zip file.
-func (*ops) Zip(ctx context.Context, m module.Version) (proxy.File, error) {
+func (*onlineOps) Zip(ctx context.Context, m module.Version) (proxy.File, error) {
 	d, err := download(m)
 	if err != nil {
 		return nil, err
@@ -274,4 +280,56 @@ type downloadInfo struct {
 func download(m module.Version) (*downloadInfo, error) {
 	d := new(downloadInfo)
 	return d, goJSON(d, "go", "mod", "download", "-json", m.String())
+}
+
+// An offlineOps is a proxy.ServerOps implementation.
+type offlineOps struct{
+	onlineOps
+}
+
+// List lists proxy files.
+func (*offlineOps) List(ctx context.Context, mpath string) (proxy.File, error) {
+	escMod, err := module.EscapePath(mpath)
+	if err != nil {
+		return nil, err
+	}
+	file := filepath.Join(downloadRoot, escMod, "@v", "list")
+	if _, err := os.Stat(file); err == nil {
+		return os.Open(file)
+	} else {
+		return nil, err
+	}
+}
+
+// Latest fetches latest file.
+func (*offlineOps) Latest(ctx context.Context, path string) (proxy.File, error) {
+	return getOfflineFile(module.Version{Path: path, Version: "latest"}, ".info")
+}
+
+// Info fetches info file.
+func (*offlineOps) Info(ctx context.Context, m module.Version) (proxy.File, error) {
+	return getOfflineFile(m, ".info")
+}
+
+// GoMod fetches go mod file.
+func (*offlineOps) GoMod(ctx context.Context, m module.Version) (proxy.File, error) {
+	return getOfflineFile(m, ".mod")
+}
+
+// Zip fetches zip file.
+func (*offlineOps) Zip(ctx context.Context, m module.Version) (proxy.File, error) {
+	return getOfflineFile(m, ".zip")
+}
+
+func getOfflineFile(m module.Version, suffix string) (proxy.File, error) {
+	escMod, err := module.EscapePath(m.Path)
+	if err != nil {
+		return nil, err
+	}
+	file := filepath.Join(downloadRoot, escMod, "@v", m.Version+suffix)
+	if _, err := os.Stat(file); err == nil {
+		return os.Open(file)
+	} else {
+		return nil, err
+	}
 }
