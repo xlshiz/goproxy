@@ -78,11 +78,10 @@ func init() {
 }
 
 func main() {
-	log.SetPrefix("goproxy.io: ")
-	log.SetFlags(0)
-
 	var handle http.Handler
 	if proxyHost != "" {
+		log.SetPrefix("goproxy: ")
+		log.SetFlags(0)
 		log.Printf("ProxyHost %s\n", proxyHost)
 		if excludeHost != "" {
 			log.Printf("ExcludeHost %s\n", excludeHost)
@@ -94,8 +93,12 @@ func main() {
 		})}
 	} else {
 		if offLine {
+			log.SetPrefix("goproxy[offline]: ")
+			log.SetFlags(0)
 			handle = &logger{proxy.NewServer(new(offlineOps))}
 		} else {
+			log.SetPrefix("goproxy[online]: ")
+			log.SetFlags(0)
 			handle = &logger{proxy.NewServer(new(onlineOps))}
 		}
 	}
@@ -283,7 +286,7 @@ func download(m module.Version) (*downloadInfo, error) {
 }
 
 // An offlineOps is a proxy.ServerOps implementation.
-type offlineOps struct{
+type offlineOps struct {
 	onlineOps
 }
 
